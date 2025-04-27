@@ -33,6 +33,7 @@ var (
 	peerPortOpt = "peer-port"
 	localASNOpt = "local-asn"
 	routerIDOpt = "router-id"
+	writeOpt    = "write"
 )
 
 // recordCmd represents the record command
@@ -46,11 +47,28 @@ var recordCmd = &cobra.Command{
 		spec.LocalASN, _ = cmd.Flags().GetUint32(localASNOpt)
 		spec.RouterID, _ = cmd.Flags().GetString(routerIDOpt)
 
+		writeFile, err := cmd.Flags().GetString(writeOpt)
+		if err != nil {
+			cmd.PrintErrf("Failed to get write option: %v\n", err)
+			return
+		}
+
+		var f *os.File
+		if writeFile != "" {
+			f, err = os.Create(writeFile)
+			if err != nil {
+				cmd.PrintErrf("Failed to open file %s: %v\n", writeFile, err)
+				return
+			}
+			defer f.Close()
+		}
+
 		conn, err := recorder.Connect(spec)
 		if err != nil {
 			cmd.PrintErrf("Failed to connect to peer: %v\n", err)
 			return
 		}
+		defer conn.Close()
 
 		doneCh := make(chan struct{})
 		sigCh := make(chan os.Signal, 1)
@@ -68,7 +86,11 @@ var recordCmd = &cobra.Command{
 					close(doneCh)
 					return
 				}
-				bgputils.PrintMessage(os.Stdout, msg)
+				if f != nil {
+					bgputils.WriteBGPMessage(f, msg)
+				} else {
+					bgputils.PrintMessage(os.Stdout, msg)
+				}
 			}
 		}()
 
@@ -76,8 +98,6 @@ var recordCmd = &cobra.Command{
 		case <-doneCh:
 		case <-sigCh:
 		}
-
-		conn.Close()
 	},
 }
 
@@ -94,4 +114,6 @@ func init() {
 
 	recordCmd.Flags().String(routerIDOpt, "", "Router ID")
 	recordCmd.MarkFlagRequired(routerIDOpt)
+
+	recordCmd.Flags().StringP(writeOpt, "w", "", "Write record to file instead of stdout")
 }
