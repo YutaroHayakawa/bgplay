@@ -16,13 +16,10 @@ limitations under the License.
 package cmd
 
 import (
-	"errors"
-	"io"
-
 	"github.com/spf13/cobra"
 
-	"github.com/YutaroHayakawa/bgplay/internal/bgputils"
 	"github.com/YutaroHayakawa/bgplay/pkg/bgpcap"
+	"github.com/YutaroHayakawa/bgplay/pkg/reporter"
 )
 
 // reportCmd represents the report command
@@ -38,16 +35,9 @@ var reportCmd = &cobra.Command{
 		}
 		defer f.Close()
 
-		for {
-			msg, err := f.ReadMsg()
-			if err != nil {
-				if errors.Is(err, io.EOF) {
-					break
-				}
-				cmd.PrintErrf("Error reading BGP message: %v\n", err)
-				return
-			}
-			bgputils.PrintMessage(cmd.OutOrStdout(), msg)
+		if err := reporter.Report(cmd.OutOrStdout(), f); err != nil {
+			cmd.PrintErrf("Error reading file: %v\n", err)
+			return
 		}
 	},
 }
