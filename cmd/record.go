@@ -24,7 +24,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/YutaroHayakawa/bgplay/internal/bgputils"
+	"github.com/YutaroHayakawa/bgplay/pkg/bgpcap"
 	"github.com/YutaroHayakawa/bgplay/pkg/recorder"
 )
 
@@ -40,6 +40,7 @@ var (
 var recordCmd = &cobra.Command{
 	Use:   "record",
 	Short: "Record BGP Messages",
+	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		spec := &recorder.ConnSpec{}
 		spec.PeerAddr, _ = cmd.Flags().GetString(peerAddrOpt)
@@ -47,20 +48,11 @@ var recordCmd = &cobra.Command{
 		spec.LocalASN, _ = cmd.Flags().GetUint32(localASNOpt)
 		spec.RouterID, _ = cmd.Flags().GetString(routerIDOpt)
 
-		writeFile, err := cmd.Flags().GetString(writeOpt)
+		var f *bgpcap.File
+		f, err := bgpcap.Create(args[0])
 		if err != nil {
-			cmd.PrintErrf("Failed to get write option: %v\n", err)
+			cmd.PrintErrf("Failed to open bgpcap file %s: %v\n", args[0], err)
 			return
-		}
-
-		var f *os.File
-		if writeFile != "" {
-			f, err = os.Create(writeFile)
-			if err != nil {
-				cmd.PrintErrf("Failed to open file %s: %v\n", writeFile, err)
-				return
-			}
-			defer f.Close()
 		}
 
 		conn, err := recorder.Connect(spec)
@@ -68,35 +60,38 @@ var recordCmd = &cobra.Command{
 			cmd.PrintErrf("Failed to connect to peer: %v\n", err)
 			return
 		}
-		defer conn.Close()
 
-		doneCh := make(chan struct{})
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-		go func() {
-			for {
-				msg, err := conn.Read()
-				if err != nil {
-					if errors.Is(err, net.ErrClosed) {
-						cmd.PrintErrf("Recording done")
-					} else {
-						cmd.PrintErrf("Finish recording: %v\n", err)
-					}
-					close(doneCh)
-					return
-				}
-				if f != nil {
-					bgputils.WriteBGPMessage(f, msg)
-				} else {
-					bgputils.PrintMessage(os.Stdout, msg)
-				}
-			}
-		}()
+		resultCh := make(chan error)
+		recorder.Record(resultCh, conn, f)
+
+		cmd.PrintErrln("Recording BGP messages")
 
 		select {
-		case <-doneCh:
+		case err = <-resultCh:
+			if err != nil {
+				cmd.PrintErrf("Encountered error while recording: %v\n", err)
+			} else {
+				cmd.PrintErrln("Recording completed")
+			}
 		case <-sigCh:
+			cmd.PrintErrln("Received interrupt signal, stopping recording")
+		}
+
+		// Close BGP Connection and drain the result channel
+		if err = conn.Close(); err != nil {
+			cmd.PrintErrf("Failed to close connection: %v\n", err)
+		}
+		err = <-resultCh
+		if err != nil && !errors.Is(err, net.ErrClosed) {
+			cmd.PrintErrf("Encountered error while closing connection: %v\n", err)
+		}
+
+		// Close the bgpcap file
+		if err = f.Close(); err != nil {
+			cmd.PrintErrf("Failed to close bgpcap file: %v\n", err)
 		}
 	},
 }
@@ -114,6 +109,4 @@ func init() {
 
 	recordCmd.Flags().String(routerIDOpt, "", "Router ID")
 	recordCmd.MarkFlagRequired(routerIDOpt)
-
-	recordCmd.Flags().StringP(writeOpt, "w", "", "Write record to file instead of stdout")
 }

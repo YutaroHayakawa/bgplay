@@ -18,10 +18,11 @@ package cmd
 import (
 	"errors"
 	"io"
-	"os"
+
+	"github.com/spf13/cobra"
 
 	"github.com/YutaroHayakawa/bgplay/internal/bgputils"
-	"github.com/spf13/cobra"
+	"github.com/YutaroHayakawa/bgplay/pkg/bgpcap"
 )
 
 // reportCmd represents the report command
@@ -30,7 +31,7 @@ var reportCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	Short: "Read recorded BGP messages from file and display them",
 	Run: func(cmd *cobra.Command, args []string) {
-		f, err := os.Open(args[0])
+		f, err := bgpcap.Open(args[0])
 		if err != nil {
 			cmd.PrintErrf("Error opening file: %v\n", err)
 			return
@@ -38,7 +39,7 @@ var reportCmd = &cobra.Command{
 		defer f.Close()
 
 		for {
-			msg, err := bgputils.ReadBGPMessage(f)
+			msg, err := f.ReadMsg()
 			if err != nil {
 				if errors.Is(err, io.EOF) {
 					break
@@ -46,7 +47,7 @@ var reportCmd = &cobra.Command{
 				cmd.PrintErrf("Error reading BGP message: %v\n", err)
 				return
 			}
-			bgputils.PrintMessage(os.Stdout, msg)
+			bgputils.PrintMessage(cmd.OutOrStdout(), msg)
 		}
 	},
 }
