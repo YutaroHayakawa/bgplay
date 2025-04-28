@@ -17,6 +17,7 @@ package cmd
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/signal"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/YutaroHayakawa/bgplay/internal/bgputils"
 	"github.com/YutaroHayakawa/bgplay/pkg/bgpcap"
 	"github.com/YutaroHayakawa/bgplay/pkg/recorder"
 )
@@ -61,13 +63,30 @@ var recordCmd = &cobra.Command{
 			return
 		}
 
+		cmd.PrintErrln("Recording BGP messages")
+
+		resultCh := make(chan error)
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-		resultCh := make(chan error)
-		recorder.Record(resultCh, conn, f)
-
-		cmd.PrintErrln("Recording BGP messages")
+		go func() {
+			for {
+				msg, err := conn.Read()
+				if err != nil {
+					if errors.Is(err, net.ErrClosed) {
+						resultCh <- nil
+						return
+					}
+					resultCh <- fmt.Errorf("failed to read BGP message: %w", err)
+					return
+				}
+				if err := f.WriteMsg(msg); err != nil {
+					resultCh <- fmt.Errorf("failed to write BGP message: %w", err)
+					return
+				}
+				bgputils.PrintMessage(cmd.OutOrStdout(), msg)
+			}
+		}()
 
 		select {
 		case err = <-resultCh:
