@@ -13,25 +13,25 @@ import (
 	"github.com/YutaroHayakawa/bgplay/internal/bgputils"
 )
 
-type RecorderConn struct {
-	spec            RecorderSpec
+type Conn struct {
+	spec            ConnSpec
 	conn            net.Conn
 	peerOpenMsg     *bgp.BGPMessage
 	cancelKeepAlive context.CancelFunc
 }
 
-type RecorderSpec struct {
+type ConnSpec struct {
 	PeerAddr string
 	PeerPort uint16
 	LocalASN uint32
 	RouterID string
 }
 
-func Connect(spec *RecorderSpec) (*RecorderConn, error) {
+func Connect(spec *ConnSpec) (*Conn, error) {
 	if spec == nil {
 		return nil, fmt.Errorf("spec is not provided")
 	}
-	b := &RecorderConn{
+	b := &Conn{
 		spec: *spec,
 	}
 	if err := b.establish(); err != nil {
@@ -41,7 +41,7 @@ func Connect(spec *RecorderSpec) (*RecorderConn, error) {
 	return b, nil
 }
 
-func (b *RecorderConn) establish() error {
+func (b *Conn) establish() error {
 	addr, err := netip.ParseAddr(b.spec.PeerAddr)
 	if err != nil {
 		return fmt.Errorf("invalid PeerAddr: %w", err)
@@ -84,7 +84,7 @@ func (b *RecorderConn) establish() error {
 	return nil
 }
 
-func (b *RecorderConn) startKeepAlive() {
+func (b *Conn) startKeepAlive() {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
@@ -110,7 +110,7 @@ func (b *RecorderConn) startKeepAlive() {
 	b.cancelKeepAlive = cancel
 }
 
-func (b *RecorderConn) Read() (*bgp.BGPMessage, error) {
+func (b *Conn) Read() (*bgp.BGPMessage, error) {
 	if b.peerOpenMsg != nil {
 		msg := b.peerOpenMsg
 		b.peerOpenMsg = nil
@@ -136,7 +136,7 @@ func (b *RecorderConn) Read() (*bgp.BGPMessage, error) {
 	}
 }
 
-func (m *RecorderConn) Close() error {
+func (m *Conn) Close() error {
 	if m.conn != nil {
 		if err := m.conn.Close(); err != nil {
 			return fmt.Errorf("failed to close connection: %w", err)
@@ -157,7 +157,7 @@ func maybeNotificationError(msg *bgp.BGPMessage) (*bgp.BGPMessage, error) {
 	return nil, bgputils.NewNotificationError(notif)
 }
 
-func (b *RecorderConn) expectMessage(msgType int) (*bgp.BGPMessage, error) {
+func (b *Conn) expectMessage(msgType int) (*bgp.BGPMessage, error) {
 	msg, err := bgputils.ReadBGPMessage(b.conn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read BGP message: %w", err)
@@ -168,7 +168,7 @@ func (b *RecorderConn) expectMessage(msgType int) (*bgp.BGPMessage, error) {
 	return msg, nil
 }
 
-func (b *RecorderConn) deriveOpenFromPeer(peerOpen *bgp.BGPOpen) *bgp.BGPMessage {
+func (b *Conn) deriveOpenFromPeer(peerOpen *bgp.BGPOpen) *bgp.BGPMessage {
 	// RFC4893
 	var myAS uint16
 	if b.spec.LocalASN > math.MaxUint16 {

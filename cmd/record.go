@@ -41,7 +41,7 @@ var recordCmd = &cobra.Command{
 	Use:   "record",
 	Short: "Record BGP Messages",
 	Run: func(cmd *cobra.Command, args []string) {
-		spec := &recorder.RecorderSpec{}
+		spec := &recorder.ConnSpec{}
 		spec.PeerAddr, _ = cmd.Flags().GetString(peerAddrOpt)
 		spec.PeerPort, _ = cmd.Flags().GetUint16(peerPortOpt)
 		spec.LocalASN, _ = cmd.Flags().GetUint32(localASNOpt)
