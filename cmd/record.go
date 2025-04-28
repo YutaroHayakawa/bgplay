@@ -40,7 +40,7 @@ var (
 
 // recordCmd represents the record command
 var recordCmd = &cobra.Command{
-	Use:   "record",
+	Use:   "record [FILE]",
 	Short: "Record BGP Messages",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
