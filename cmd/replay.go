@@ -16,11 +16,11 @@ limitations under the License.
 package cmd
 
 import (
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
-	"github.com/YutaroHayakawa/bgplay/pkg/bgpcap"
 	"github.com/YutaroHayakawa/bgplay/pkg/replayer"
 	"github.com/spf13/cobra"
 )
@@ -31,25 +31,20 @@ var replayCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	Short: "Replays BGP messages from a file",
 	Run: func(cmd *cobra.Command, args []string) {
-		spec := &replayer.ConnSpec{}
+		spec := replayer.ReplayerSpec{}
 		spec.PeerAddr, _ = cmd.Flags().GetString(peerAddrOpt)
 		spec.PeerPort, _ = cmd.Flags().GetUint16(peerPortOpt)
+		spec.FileName = args[0]
 
-		f, err := bgpcap.Open(args[0])
-		if err != nil {
-			cmd.PrintErrf("Failed to open bgpcap file %s: %v\n", args[0], err)
-			return
-		}
-		defer f.Close()
+		r := replayer.New(slog.Default(), spec)
 
-		conn, err := replayer.Replay(spec, f)
-		if err != nil {
+		if err := r.Replay(); err != nil {
 			cmd.PrintErrf("Failed to replay BGP messages: %v\n", err)
 			return
 		}
-		defer conn.Close()
+		defer r.Close()
 
-		cmd.Println("Replaied BGP messages successfully")
+		cmd.PrintErrln("Replay done. Press Ctrl-C to finish BGP session.")
 
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

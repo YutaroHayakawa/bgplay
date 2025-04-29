@@ -21,6 +21,14 @@ func NewNotificationError(notif *bgp.BGPNotification) error {
 	}
 }
 
+func MaybeNotificationError(msg *bgp.BGPMessage) (*bgp.BGPMessage, error) {
+	notif, ok := msg.Body.(*bgp.BGPNotification)
+	if !ok {
+		return msg, nil
+	}
+	return nil, NewNotificationError(notif)
+}
+
 func ReadBGPMessage(r io.Reader) (*bgp.BGPMessage, error) {
 	hdrBuf := make([]byte, bgp.BGP_HEADER_LENGTH)
 	if _, err := io.ReadFull(r, hdrBuf); err != nil {
@@ -37,6 +45,17 @@ func ReadBGPMessage(r io.Reader) (*bgp.BGPMessage, error) {
 	msg, err := bgp.ParseBGPBody(hdr, bodyBuf)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse BGP message: %w", err)
+	}
+	return msg, nil
+}
+
+func ExpectMessage(r io.Reader, msgType int) (*bgp.BGPMessage, error) {
+	msg, err := ReadBGPMessage(r)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read BGP message: %w", err)
+	}
+	if msg.Header.Type != uint8(msgType) {
+		return MaybeNotificationError(msg)
 	}
 	return msg, nil
 }
