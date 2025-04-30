@@ -1,6 +1,6 @@
 module github.com/YutaroHayakawa/bgplay
 
-go 1.24.2
+go 1.24.0
 
 require (
 	github.com/osrg/gobgp/v3 v3.36.0
