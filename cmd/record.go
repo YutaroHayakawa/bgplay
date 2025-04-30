@@ -16,17 +16,13 @@ limitations under the License.
 package cmd
 
 import (
-	"errors"
-	"fmt"
-	"net"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/spf13/cobra"
 
-	"github.com/YutaroHayakawa/bgplay/internal/bgputils"
-	"github.com/YutaroHayakawa/bgplay/pkg/bgpcap"
 	"github.com/YutaroHayakawa/bgplay/pkg/recorder"
 )
 
@@ -44,74 +40,26 @@ var recordCmd = &cobra.Command{
 	Short: "Record BGP Messages",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		spec := &recorder.ConnSpec{}
+		spec := recorder.RecorderSpec{}
 		spec.PeerAddr, _ = cmd.Flags().GetString(peerAddrOpt)
 		spec.PeerPort, _ = cmd.Flags().GetUint16(peerPortOpt)
 		spec.LocalASN, _ = cmd.Flags().GetUint32(localASNOpt)
 		spec.RouterID, _ = cmd.Flags().GetString(routerIDOpt)
+		spec.FileName = args[0]
 
-		var f *bgpcap.File
-		f, err := bgpcap.Create(args[0])
-		if err != nil {
-			cmd.PrintErrf("Failed to open bgpcap file %s: %v\n", args[0], err)
-			return
+		r := recorder.New(slog.Default(), spec)
+
+		if err := r.Record(); err != nil {
+			cmd.PrintErrln("Failed start recording:", err)
 		}
+		defer r.Close()
 
-		conn, err := recorder.Connect(spec)
-		if err != nil {
-			cmd.PrintErrf("Failed to connect to peer: %v\n", err)
-			return
-		}
+		cmd.PrintErrln("Press Ctrl+C to stop.")
 
-		cmd.PrintErrln("Recording BGP messages")
-
-		resultCh := make(chan error)
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-		go func() {
-			for {
-				msg, err := conn.Read()
-				if err != nil {
-					if errors.Is(err, net.ErrClosed) {
-						resultCh <- nil
-						return
-					}
-					resultCh <- fmt.Errorf("failed to read BGP message: %w", err)
-					return
-				}
-				if err := f.WriteMsg(msg); err != nil {
-					resultCh <- fmt.Errorf("failed to write BGP message: %w", err)
-					return
-				}
-				bgputils.PrintMessage(cmd.OutOrStdout(), msg)
-			}
-		}()
-
-		select {
-		case err = <-resultCh:
-			if err != nil {
-				cmd.PrintErrf("Encountered error while recording: %v\n", err)
-			} else {
-				cmd.PrintErrln("Recording completed")
-			}
-		case <-sigCh:
-			cmd.PrintErrln("Received interrupt signal, stopping recording")
-		}
-
-		// Close BGP Connection and drain the result channel
-		if err = conn.Close(); err != nil {
-			cmd.PrintErrf("Failed to close connection: %v\n", err)
-		}
-		err = <-resultCh
-		if err != nil && !errors.Is(err, net.ErrClosed) {
-			cmd.PrintErrf("Encountered error while closing connection: %v\n", err)
-		}
-
-		// Close the bgpcap file
-		if err = f.Close(); err != nil {
-			cmd.PrintErrf("Failed to close bgpcap file: %v\n", err)
-		}
+		<-sigCh
 	},
 }
 
