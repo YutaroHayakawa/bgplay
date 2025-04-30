@@ -21,7 +21,9 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/YutaroHayakawa/bgplay/internal/bgputils"
 	"github.com/YutaroHayakawa/bgplay/pkg/replayer"
+	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
 	"github.com/spf13/cobra"
 )
 
@@ -35,6 +37,9 @@ var replayCmd = &cobra.Command{
 		spec.PeerAddr, _ = cmd.Flags().GetString(peerAddrOpt)
 		spec.PeerPort, _ = cmd.Flags().GetUint16(peerPortOpt)
 		spec.FileName = args[0]
+		spec.PostReplayFunc = func(msg *bgp.BGPMessage) {
+			bgputils.PrintMessage(cmd.OutOrStdout(), msg)
+		}
 
 		r := replayer.New(slog.Default(), spec)
 

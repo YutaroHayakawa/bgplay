@@ -40,12 +40,18 @@ type ReplayerSpec struct {
 	PeerPort uint16
 	// FileName is the path to the bgpcap file to read BGP messages from.
 	FileName string
+
+	// PostReplayFunc is called after replaying a message to the peer. This
+	// is useful for implementing counting or logging of replayed BGP
+	// messages. The CLI uses this to print the message to the stdout.
+	PostReplayFunc func(msg *bgp.BGPMessage)
 }
 
 // New creates a new Replayer instance.
 func New(logger *slog.Logger, spec ReplayerSpec) *Replayer {
 	return &Replayer{
-		spec: spec,
+		logger: logger,
+		spec:   spec,
 	}
 }
 
@@ -104,6 +110,9 @@ func (r *Replayer) establish(f *bgpcap.File) error {
 	if err = bgputils.WriteBGPMessage(r.conn, msg); err != nil {
 		return err
 	}
+	if r.spec.PostReplayFunc != nil {
+		r.spec.PostReplayFunc(msg)
+	}
 
 	// Expect peer OPEN
 	msg, err = bgputils.ExpectMessage(r.conn, bgp.BGP_MSG_OPEN)
@@ -148,6 +157,9 @@ func (r *Replayer) replayUpdates(f *bgpcap.File) error {
 		if err := bgputils.WriteBGPMessage(r.conn, msg); err != nil {
 			r.connMutex.Unlock()
 			return fmt.Errorf("failed to send UPDATE message: %w", err)
+		}
+		if r.spec.PostReplayFunc != nil {
+			r.spec.PostReplayFunc(msg)
 		}
 
 		r.connMutex.Unlock()
