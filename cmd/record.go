@@ -16,15 +16,21 @@ limitations under the License.
 package cmd
 
 import (
-	"log/slog"
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"net/netip"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
 	"github.com/spf13/cobra"
 
 	"github.com/YutaroHayakawa/bgplay/internal/bgputils"
+	"github.com/YutaroHayakawa/bgplay/pkg/bgpcap"
 	"github.com/YutaroHayakawa/bgplay/pkg/recorder"
 )
 
@@ -42,30 +48,95 @@ var recordCmd = &cobra.Command{
 	Short: "Record BGP Messages",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		spec := recorder.RecorderSpec{}
-		spec.PeerAddr, _ = cmd.Flags().GetString(peerAddrOpt)
-		spec.PeerPort, _ = cmd.Flags().GetUint16(peerPortOpt)
-		spec.LocalASN, _ = cmd.Flags().GetUint32(localASNOpt)
-		spec.RouterID, _ = cmd.Flags().GetString(routerIDOpt)
-		spec.FileName = args[0]
-		spec.PostRecordFunc = func(msg *bgp.BGPMessage) {
-			bgputils.PrintMessage(cmd.OutOrStdout(), msg)
+		peerAddr, _ := cmd.Flags().GetString(peerAddrOpt)
+		peerPort, _ := cmd.Flags().GetUint16(peerPortOpt)
+		localASN, _ := cmd.Flags().GetUint32(localASNOpt)
+		routerID, _ := cmd.Flags().GetString(routerIDOpt)
+		fileName := args[0]
+
+		id, err := netip.ParseAddr(routerID)
+		if err != nil {
+			cmd.PrintErrln("Invalid router ID:", err)
+			return
 		}
 
-		r := recorder.New(slog.Default(), spec)
+		r := recorder.Dialer{
+			AS: localASN,
+			ID: id,
+		}
 
-		if err := r.Record(); err != nil {
+		addr, err := netip.ParseAddr(peerAddr)
+		if err != nil {
+			cmd.PrintErrln("Invalid peer address:", err)
+			return
+		}
+
+		conn, err := r.Connect(context.Background(), netip.AddrPortFrom(addr, peerPort))
+		if err != nil {
 			cmd.PrintErrln("Failed start recording:", err)
+			return
 		}
-		defer r.Close()
+		defer conn.Close()
 
-		cmd.PrintErrln("Press Ctrl+C to stop.")
+		file, err := bgpcap.Create(fileName)
+		if err != nil {
+			cmd.PrintErrln("Failed to create file:", err)
+			return
+		}
+		defer file.Close()
+
+		cmd.PrintErrln("Recording started. Press Ctrl+C to stop.")
 
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-		<-sigCh
+		if err := recordUpdates(sigCh, conn, file); err != nil {
+			cmd.PrintErrln("Error recording BGP messages:", err)
+		}
 	},
+}
+
+func recordUpdates(sigCh chan os.Signal, conn *recorder.Conn, file *bgpcap.File) error {
+	for {
+		conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+
+		msg, err := conn.Read()
+		if err != nil {
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				select {
+				case <-sigCh:
+					return nil
+				default:
+					continue
+				}
+			}
+			if errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			return err
+		}
+
+		switch msg.Header.Type {
+		case bgp.BGP_MSG_OPEN:
+			// Handle OPEN messages
+		case bgp.BGP_MSG_UPDATE:
+			// Handle UPDATE messages
+		case bgp.BGP_MSG_KEEPALIVE:
+			// Ignore KEEPALIVE messages. Reread.
+			continue
+		case bgp.BGP_MSG_NOTIFICATION:
+			// Return an error for NOTIFICATION messages
+			return bgputils.NewNotificationError(msg.Body.(*bgp.BGPNotification))
+		default:
+			return fmt.Errorf("unexpected message type: %d", msg.Header.Type)
+		}
+
+		if err := file.Write(msg); err != nil {
+			return err
+		}
+
+		bgputils.PrintMessage(os.Stdout, msg)
+	}
 }
 
 func init() {

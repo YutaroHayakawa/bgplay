@@ -2,125 +2,119 @@ package recorder
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"log/slog"
 	"math"
 	"net"
 	"net/netip"
-	"os"
+	"sync"
 	"time"
 
 	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
 
 	"github.com/YutaroHayakawa/bgplay/internal/bgputils"
-	"github.com/YutaroHayakawa/bgplay/pkg/bgpcap"
 )
 
-var (
-	errField  = "error"
-	typeField = "type"
-)
+type Dialer struct {
+	AS uint32
+	ID netip.Addr
+}
 
-type Recorder struct {
-	spec   RecorderSpec
-	logger *slog.Logger
-
-	f           *bgpcap.File
+type Conn struct {
+	mu          sync.Mutex
 	conn        net.Conn
+	readOpen    bool
 	peerOpenMsg *bgp.BGPMessage
 	cancel      context.CancelFunc
 }
 
-type RecorderSpec struct {
-	PeerAddr string
-	PeerPort uint16
-	LocalASN uint32
-	RouterID string
-	FileName string
-
-	// PostRecordFunc is called after writing a message to the file. This
-	// is useful for implementing counting or logging of recorded BGP
-	// messages. The CLI uses this to print the message to the stdout.
-	PostRecordFunc func(msg *bgp.BGPMessage)
-}
-
-func New(logger *slog.Logger, spec RecorderSpec) *Recorder {
-	return &Recorder{
-		spec:   spec,
-		logger: logger,
+func (d *Dialer) Connect(ctx context.Context, addrPort netip.AddrPort) (*Conn, error) {
+	c := &Conn{}
+	if err := c.establish(d.AS, d.ID, addrPort); err != nil {
+		return nil, fmt.Errorf("cannot establish BGP session: %w", err)
 	}
+	ctx, c.cancel = context.WithCancel(ctx)
+	c.startKeepAlive(ctx)
+	return c, nil
 }
 
-func (r *Recorder) Record() error {
-	f, err := bgpcap.Create(r.spec.FileName)
+func (c *Conn) Read() (*bgp.BGPMessage, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.conn == nil {
+		return nil, fmt.Errorf("connection is not established")
+	}
+
+	if !c.readOpen {
+		c.readOpen = true
+		return c.peerOpenMsg, nil
+	}
+
+	msg, err := bgputils.ReadBGPMessage(c.conn)
 	if err != nil {
-		return fmt.Errorf("failed to open bgpcap file %s: %w", r.spec.FileName, err)
-	}
-	r.f = f
-
-	if err := r.establish(); err != nil {
-		return fmt.Errorf("cannot establish BGP session: %w", err)
+		return nil, fmt.Errorf("failed to read BGP message: %w", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	r.cancel = cancel
+	return msg, nil
+}
 
-	r.startKeepAlive(ctx)
-	r.startRecordUpdates(ctx)
+func (c *Conn) SetReadDeadline(t time.Time) error {
+	return c.conn.SetReadDeadline(t)
+}
 
+func (c *Conn) Close() error {
+	if c.conn != nil {
+		if err := c.conn.Close(); err != nil {
+			return fmt.Errorf("failed to close connection: %w", err)
+		}
+		c.conn = nil
+	}
+	if c.cancel != nil {
+		c.cancel()
+	}
 	return nil
 }
 
-func (r *Recorder) establish() error {
-	addr, err := netip.ParseAddr(r.spec.PeerAddr)
-	if err != nil {
-		return fmt.Errorf("invalid PeerAddr: %w", err)
-	}
-
-	conn, err := net.Dial("tcp", netip.AddrPortFrom(addr, r.spec.PeerPort).String())
+func (c *Conn) establish(as uint32, id netip.Addr, addrPort netip.AddrPort) error {
+	conn, err := net.Dial("tcp", addrPort.String())
 	if err != nil {
 		return fmt.Errorf("failed to connect to peer: %w", err)
 	}
-	r.conn = conn
+	c.conn = conn
 
 	// We're passive. Expect peer OPEN.
-	msg, err := bgputils.ExpectMessage(r.conn, bgp.BGP_MSG_OPEN)
+	msg, err := bgputils.ExpectMessage(c.conn, bgp.BGP_MSG_OPEN)
 	if err != nil {
 		return err
 	}
 	peerOpen := msg.Body.(*bgp.BGPOpen)
 
 	// Store peer open message for later use
-	r.peerOpenMsg = msg
+	c.peerOpenMsg = msg
 
 	// Derive our OPEN message from the peer's OPEN message and send it.
-	msg = r.deriveOpenFromPeer(peerOpen)
-	if err = bgputils.WriteBGPMessage(r.conn, msg); err != nil {
+	msg = c.deriveOpenFromPeer(as, id, peerOpen)
+	if err = bgputils.WriteBGPMessage(c.conn, msg); err != nil {
 		return err
 	}
 
 	// Send out KEEPALIVE message to the peer.
 	msg = bgp.NewBGPKeepAliveMessage()
-	if err = bgputils.WriteBGPMessage(r.conn, msg); err != nil {
+	if err = bgputils.WriteBGPMessage(c.conn, msg); err != nil {
 		return err
 	}
 
 	// Expect peer KEEPALIVE.
-	msg, err = bgputils.ExpectMessage(r.conn, bgp.BGP_MSG_KEEPALIVE)
-	if err != nil {
+	if _, err = bgputils.ExpectMessage(c.conn, bgp.BGP_MSG_KEEPALIVE); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func (r *Recorder) startKeepAlive(ctx context.Context) {
+func (c *Conn) startKeepAlive(ctx context.Context) {
 	go func() {
-		r.logger.Info("Start sending KEEPALIVE messages")
-		defer r.logger.Info("Stop sending KEEPALIVE messages")
-
-		interval := r.peerOpenMsg.Body.(*bgp.BGPOpen).HoldTime / 3
+		interval := c.peerOpenMsg.Body.(*bgp.BGPOpen).HoldTime / 3
 		for {
 			ch := time.After(time.Duration(interval) * time.Second)
 			select {
@@ -131,97 +125,22 @@ func (r *Recorder) startKeepAlive(ctx context.Context) {
 
 			// Send KEEPALIVE message to the peer
 			if err := bgputils.WriteBGPMessage(
-				r.conn,
+				c.conn,
 				bgp.NewBGPKeepAliveMessage(),
 			); err != nil {
-				r.logger.Error("Failed to send KEEPALIVE", "error", err)
 				return
 			}
 		}
 	}()
 }
 
-func (r *Recorder) startRecordUpdates(ctx context.Context) {
-	go func() {
-		r.logger.Info("Start recording BGP messages")
-		defer r.logger.Info("Stop recording BGP messages")
-
-		if err := r.f.WriteMsg(r.peerOpenMsg); err != nil {
-			r.logger.Error("Failed to write BGP message", errField, err)
-			return
-		}
-		if r.spec.PostRecordFunc != nil {
-			r.spec.PostRecordFunc(r.peerOpenMsg)
-		}
-		for {
-			r.conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-
-			msg, err := bgputils.ReadBGPMessage(r.conn)
-			if err != nil {
-				if errors.Is(err, os.ErrDeadlineExceeded) {
-					if ctx.Err() == nil {
-						// Timeout. Ignore and continue.
-						continue
-					} else {
-						// Context is done. Return.
-						return
-					}
-				}
-				if errors.Is(err, net.ErrClosed) {
-					// Connection close is expected. Return.
-					return
-				}
-				r.logger.Error("Failed to read BGP message", errField, err)
-				return
-			}
-			switch msg.Header.Type {
-			case bgp.BGP_MSG_UPDATE:
-				// Handle UPDATE messages
-			case bgp.BGP_MSG_KEEPALIVE:
-				// Ignore KEEPALIVE messages. Reread.
-				continue
-			case bgp.BGP_MSG_NOTIFICATION:
-				// Return error on notification
-				err := bgputils.NewNotificationError(msg.Body.(*bgp.BGPNotification))
-				r.logger.Error("Received NOTIFICATION message", errField, err)
-				return
-			default:
-				r.logger.Error("Received unexpected message type", typeField, msg.Header.Type)
-				return
-			}
-
-			if err := r.f.WriteMsg(msg); err != nil {
-				r.logger.Error("Failed to write BGP message", errField, err)
-				return
-			}
-
-			if r.spec.PostRecordFunc != nil {
-				r.spec.PostRecordFunc(msg)
-			}
-		}
-	}()
-}
-
-func (r *Recorder) Close() error {
-	if r.conn != nil {
-		if err := r.conn.Close(); err != nil {
-			return fmt.Errorf("failed to close connection: %w", err)
-		}
-		r.conn = nil
-	}
-	if r.cancel != nil {
-		r.cancel()
-	}
-	return nil
-}
-
-func (r *Recorder) deriveOpenFromPeer(peerOpen *bgp.BGPOpen) *bgp.BGPMessage {
+func (c *Conn) deriveOpenFromPeer(as uint32, id netip.Addr, peerOpen *bgp.BGPOpen) *bgp.BGPMessage {
 	// RFC4893
 	var myAS uint16
-	if r.spec.LocalASN > math.MaxUint16 {
+	if as > math.MaxUint16 {
 		myAS = bgp.AS_TRANS
 	} else {
-		myAS = uint16(r.spec.LocalASN)
+		myAS = uint16(as)
 	}
 
 	// Handle capabilities
@@ -260,7 +179,7 @@ func (r *Recorder) deriveOpenFromPeer(peerOpen *bgp.BGPOpen) *bgp.BGPMessage {
 			case *bgp.CapFourOctetASNumber:
 				// We always support 4-octet AS number. When
 				// the peer supports it.
-				myCaps = append(myCaps, bgp.NewCapFourOctetASNumber(r.spec.LocalASN))
+				myCaps = append(myCaps, bgp.NewCapFourOctetASNumber(as))
 			case *bgp.CapAddPath:
 				// If the peer wish to send the ADD-PATH
 				// routes, let them do it.
@@ -286,7 +205,7 @@ func (r *Recorder) deriveOpenFromPeer(peerOpen *bgp.BGPOpen) *bgp.BGPMessage {
 	return bgp.NewBGPOpenMessage(
 		myAS,
 		math.MaxUint16, // Maximum possible hold time
-		r.spec.RouterID,
+		id.String(),
 		[]bgp.OptionParameterInterface{
 			bgp.NewOptionParameterCapability(myCaps),
 		},

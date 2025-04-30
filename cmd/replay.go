@@ -16,12 +16,17 @@ limitations under the License.
 package cmd
 
 import (
-	"log/slog"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/netip"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/YutaroHayakawa/bgplay/internal/bgputils"
+	"github.com/YutaroHayakawa/bgplay/pkg/bgpcap"
 	"github.com/YutaroHayakawa/bgplay/pkg/replayer"
 	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
 	"github.com/spf13/cobra"
@@ -33,29 +38,93 @@ var replayCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	Short: "Replays BGP messages from a file",
 	Run: func(cmd *cobra.Command, args []string) {
-		spec := replayer.ReplayerSpec{}
-		spec.PeerAddr, _ = cmd.Flags().GetString(peerAddrOpt)
-		spec.PeerPort, _ = cmd.Flags().GetUint16(peerPortOpt)
-		spec.FileName = args[0]
-		spec.PostReplayFunc = func(msg *bgp.BGPMessage) {
-			bgputils.PrintMessage(cmd.OutOrStdout(), msg)
-		}
+		peerAddr, _ := cmd.Flags().GetString(peerAddrOpt)
+		peerPort, _ := cmd.Flags().GetUint16(peerPortOpt)
+		fileName := args[0]
 
-		r := replayer.New(slog.Default(), spec)
-
-		if err := r.Replay(); err != nil {
-			cmd.PrintErrf("Failed to replay BGP messages: %v\n", err)
+		file, err := bgpcap.Open(fileName)
+		if err != nil {
+			cmd.PrintErrf("Error opening file: %v\n", err)
 			return
 		}
-		defer r.Close()
+		defer file.Close()
+
+		openMsg, err := file.Read()
+		if err != nil {
+			cmd.PrintErrf("Error reading file: %v\n", err)
+			return
+		}
+		if openMsg.Header.Type != bgp.BGP_MSG_OPEN {
+			cmd.PrintErrln("First message in the file is not OPEN")
+			return
+		}
+
+		r := replayer.Dialer{
+			OpenMessage: openMsg,
+		}
+
+		addr, err := netip.ParseAddr(peerAddr)
+		if err != nil {
+			cmd.PrintErrln("Invalid peer address:", err)
+			return
+		}
+
+		conn, err := r.Connect(
+			context.Background(),
+			netip.AddrPortFrom(addr, peerPort),
+		)
+		if err != nil {
+			cmd.PrintErrln("Failed to connect to peer:", err)
+			return
+		}
+		defer conn.Close()
+
+		bgputils.PrintMessage(os.Stdout, openMsg)
+
+		if err := replayUpdates(file, conn); err != nil {
+			cmd.PrintErrln("Failed to send OPEN message:", err)
+			return
+		}
 
 		cmd.PrintErrln("Replay done. Press Ctrl-C to finish BGP session.")
 
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
 		<-sigCh
 	},
+}
+
+func replayUpdates(file *bgpcap.File, conn *replayer.Conn) error {
+	for {
+		msg, err := file.Read()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+
+		switch msg.Header.Type {
+		case bgp.BGP_MSG_OPEN:
+			// Handle OPEN messages
+		case bgp.BGP_MSG_UPDATE:
+			// Handle UPDATE messages
+		case bgp.BGP_MSG_KEEPALIVE:
+			// Ignore KEEPALIVE messages. Reread.
+			continue
+		case bgp.BGP_MSG_NOTIFICATION:
+			// Return an error for NOTIFICATION messages
+			return bgputils.NewNotificationError(msg.Body.(*bgp.BGPNotification))
+		default:
+			return fmt.Errorf("unexpected message type: %d", msg.Header.Type)
+		}
+
+		if err := conn.Write(msg); err != nil {
+			return err
+		}
+
+		bgputils.PrintMessage(os.Stdout, msg)
+	}
 }
 
 func init() {

@@ -18,7 +18,7 @@ import (
 //  0                   1                   2                   3
 //  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
 // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-// |   Version (8) |               Reserved (56 bits)             |
+// |   Version (8) |               Reserved (56 bits)              |
 // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 // |                                                               |
 // |                    BGP Messages (variable)                    |
@@ -108,7 +108,7 @@ func Open(filename string) (*File, error) {
 	return ret, nil
 }
 
-func (f *File) WriteMsg(msg *bgp.BGPMessage) error {
+func (f *File) Write(msg *bgp.BGPMessage) error {
 	if f.f == nil {
 		return os.ErrClosed
 	}
@@ -118,7 +118,7 @@ func (f *File) WriteMsg(msg *bgp.BGPMessage) error {
 	return bgputils.WriteBGPMessage(f.f, msg)
 }
 
-func (f *File) ReadMsg() (*bgp.BGPMessage, error) {
+func (f *File) Read() (*bgp.BGPMessage, error) {
 	if f.f == nil {
 		return nil, os.ErrClosed
 	}
