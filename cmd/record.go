@@ -21,8 +21,10 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
 	"github.com/spf13/cobra"
 
+	"github.com/YutaroHayakawa/bgplay/internal/bgputils"
 	"github.com/YutaroHayakawa/bgplay/pkg/recorder"
 )
 
@@ -46,6 +48,9 @@ var recordCmd = &cobra.Command{
 		spec.LocalASN, _ = cmd.Flags().GetUint32(localASNOpt)
 		spec.RouterID, _ = cmd.Flags().GetString(routerIDOpt)
 		spec.FileName = args[0]
+		spec.PostRecordFunc = func(msg *bgp.BGPMessage) {
+			bgputils.PrintMessage(cmd.OutOrStdout(), msg)
+		}
 
 		r := recorder.New(slog.Default(), spec)
 

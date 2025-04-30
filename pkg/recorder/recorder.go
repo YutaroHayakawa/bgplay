@@ -38,6 +38,11 @@ type RecorderSpec struct {
 	LocalASN uint32
 	RouterID string
 	FileName string
+
+	// PostRecordFunc is called after writing a message to the file. This
+	// is useful for implementing counting or logging of recorded BGP
+	// messages. The CLI uses this to print the message to the stdout.
+	PostRecordFunc func(msg *bgp.BGPMessage)
 }
 
 func New(logger *slog.Logger, spec RecorderSpec) *Recorder {
@@ -145,6 +150,9 @@ func (r *Recorder) startRecordUpdates(ctx context.Context) {
 			r.logger.Error("Failed to write BGP message", errField, err)
 			return
 		}
+		if r.spec.PostRecordFunc != nil {
+			r.spec.PostRecordFunc(r.peerOpenMsg)
+		}
 		for {
 			r.conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 
@@ -181,9 +189,14 @@ func (r *Recorder) startRecordUpdates(ctx context.Context) {
 				r.logger.Error("Received unexpected message type", typeField, msg.Header.Type)
 				return
 			}
+
 			if err := r.f.WriteMsg(msg); err != nil {
 				r.logger.Error("Failed to write BGP message", errField, err)
 				return
+			}
+
+			if r.spec.PostRecordFunc != nil {
+				r.spec.PostRecordFunc(msg)
 			}
 		}
 	}()
