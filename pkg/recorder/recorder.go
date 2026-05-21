@@ -11,7 +11,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
+	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 
 	"github.com/YutaroHayakawa/bgplay/internal/bgputils"
 	"github.com/YutaroHayakawa/bgplay/pkg/bgpcap"
@@ -95,7 +95,10 @@ func (r *Recorder) establish() error {
 	r.peerOpenMsg = msg
 
 	// Derive our OPEN message from the peer's OPEN message and send it.
-	msg = r.deriveOpenFromPeer(peerOpen)
+	msg, err = r.deriveOpenFromPeer(peerOpen)
+	if err != nil {
+		return err
+	}
 	if err = bgputils.WriteBGPMessage(r.conn, msg); err != nil {
 		return err
 	}
@@ -215,7 +218,7 @@ func (r *Recorder) Close() error {
 	return nil
 }
 
-func (r *Recorder) deriveOpenFromPeer(peerOpen *bgp.BGPOpen) *bgp.BGPMessage {
+func (r *Recorder) deriveOpenFromPeer(peerOpen *bgp.BGPOpen) (*bgp.BGPMessage, error) {
 	// RFC4893
 	var myAS uint16
 	if r.spec.LocalASN > math.MaxUint16 {
@@ -273,7 +276,7 @@ func (r *Recorder) deriveOpenFromPeer(peerOpen *bgp.BGPOpen) *bgp.BGPMessage {
 						continue
 					}
 					tuples = append(tuples, bgp.NewCapAddPathTuple(
-						tuple.RouteFamily,
+						tuple.Family,
 						bgp.BGP_ADD_PATH_RECEIVE,
 					))
 				}
@@ -283,10 +286,15 @@ func (r *Recorder) deriveOpenFromPeer(peerOpen *bgp.BGPOpen) *bgp.BGPMessage {
 			}
 		}
 	}
+	routerID, err := netip.ParseAddr(r.spec.RouterID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid RouterID: %w", err)
+	}
+
 	return bgp.NewBGPOpenMessage(
 		myAS,
 		math.MaxUint16, // Maximum possible hold time
-		r.spec.RouterID,
+		routerID,
 		[]bgp.OptionParameterInterface{
 			bgp.NewOptionParameterCapability(myCaps),
 		},

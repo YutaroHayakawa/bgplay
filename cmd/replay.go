@@ -23,7 +23,7 @@ import (
 
 	"github.com/YutaroHayakawa/bgplay/internal/bgputils"
 	"github.com/YutaroHayakawa/bgplay/pkg/replayer"
-	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
+	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 	"github.com/spf13/cobra"
 )
 
