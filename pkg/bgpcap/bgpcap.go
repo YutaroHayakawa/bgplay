@@ -6,7 +6,7 @@ import (
 	"os"
 
 	"github.com/YutaroHayakawa/bgplay/internal/bgputils"
-	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
+	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 )
 
 // BGPCAP file is a file format for storing BGP messages. It is a simple format
